@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sheet metal spring network (12&quot; × 24&quot;)</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: system-ui, sans-serif;
+        background: #0f1114;
+        color: #e8eaed;
+      }
+      #ui {
+        position: absolute;
+        left: 12px;
+        top: 12px;
+        max-width: 360px;
+        padding: 12px 14px;
+        background: rgba(20, 24, 30, 0.92);
+        border: 1px solid #2a3140;
+        border-radius: 8px;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+      #ui h1 {
+        margin: 0 0 8px;
+        font-size: 15px;
+        font-weight: 600;
+      }
+      #ui p {
+        margin: 0 0 10px;
+        color: #9aa0a6;
+      }
+      label {
+        display: block;
+        margin-top: 8px;
+        color: #bdc1c6;
+      }
+      button {
+        margin: 6px 6px 0 0;
+        padding: 6px 10px;
+        border-radius: 6px;
+        border: 1px solid #3c4454;
+        background: #1a1f28;
+        color: #e8eaed;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #252b36;
+      }
+      code {
+        font-size: 11px;
+        color: #c9e4ff;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="ui">
+      <h1>Sheet metal mesh</h1>
+      <p>
+        12″ × 24″ plane, 512×512 cells (<code id="vertCount"></code> vertices). Structural + shear springs;
+        bilaplacian bending on displacement. Open this file in a browser (local file or static server).
+      </p>
+      <label><input type="checkbox" id="useCollider" checked /> Collider (sphere pressing −Y)</label>
+      <label><input type="checkbox" id="useGrippers" checked /> Grippers (corner boxes)</label>
+      <label>Stretch stiffness <input type="range" id="kStretch" min="1e4" max="2e5" step="1e3" value="8e4" /></label>
+      <label>Bending stiffness <input type="range" id="kBend" min="0" max="8e3" step="100" value="2e3" /></label>
+      <label>Physics substeps <input type="range" id="substeps" min="1" max="4" step="1" value="2" /></label>
+      <button type="button" id="btnReset">Reset sheet</button>
+      <button type="button" id="btnReapply">Re-scan grippers</button>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+    <script src="./sheet-metal-simulation.js"></script>
+    <script>
+      (function () {
+        const sim = new SheetMetalSimulation({
+          cellsX: 512,
+          cellsZ: 512,
+          inchesWide: 24,
+          inchesDeep: 12,
+        });
+
+        document.getElementById('vertCount').textContent = sim.getVertexCount().toLocaleString();
+
+        const nx = sim.nx;
+        const nz = sim.nz;
+        const nv = sim.getVertexCount();
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setClearColor(0x0f1114, 1);
+        document.body.appendChild(renderer.domElement);
+
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 500);
+        camera.position.set(18, 14, 22);
+        camera.lookAt(12, 0, 6);
+
+        scene.add(new THREE.AmbientLight(0x606870, 0.9));
+        const dir = new THREE.DirectionalLight(0xffffff, 1.1);
+        dir.position.set(8, 24, 10);
+        scene.add(dir);
+
+        const positions = new Float32Array(nv * 3);
+        const indices = [];
+        for (let iz = 0; iz < nz - 1; iz++) {
+          for (let ix = 0; ix < nx - 1; ix++) {
+            const a = iz * nx + ix;
+            const b = a + 1;
+            const d = a + nx;
+            const c = d + 1;
+            indices.push(a, b, c, a, c, d);
+          }
+        }
+        const geometry = new THREE.BufferGeometry();
+        geometry.setIndex(indices);
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.computeVertexNormals();
+
+        const material = new THREE.MeshStandardMaterial({
+          color: 0xb8c4d0,
+          metalness: 0.55,
+          roughness: 0.42,
+          side: THREE.DoubleSide,
+        });
+        const mesh = new THREE.Mesh(geometry, material);
+        scene.add(mesh);
+
+        const grid = new THREE.GridHelper(40, 40, 0x2a3140, 0x1a1f28);
+        grid.position.set(12, -0.02, 6);
+        scene.add(grid);
+
+        const colliderMesh = new THREE.Mesh(
+          new THREE.SphereGeometry(2.2, 32, 24),
+          new THREE.MeshBasicMaterial({ color: 0xff5533, wireframe: true, transparent: true, opacity: 0.35 })
+        );
+        scene.add(colliderMesh);
+
+        const gripA = new THREE.BoxHelper(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1)), 0x44ccff);
+        const gripB = new THREE.BoxHelper(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1)), 0x44ff88);
+        scene.add(gripA, gripB);
+
+        function setupSceneObjects() {
+          const cx = 12;
+          const cy = -1.2;
+          const cz = 6;
+          colliderMesh.position.set(cx, cy, cz);
+          sim.setCollider({ type: 'sphere', center: [cx, cy, cz], radius: 2.2 });
+
+          sim.clearGrippers();
+          if (document.getElementById('useGrippers').checked) {
+            sim.addGripper({
+              type: 'box',
+              min: [-0.5, -2, -0.5],
+              max: [2.5, 2, 2.5],
+              pinToRest: true,
+            });
+            sim.addGripper({
+              type: 'box',
+              min: [21.5, -2, 9.5],
+              max: [24.5, 2, 12.5],
+              pinToRest: true,
+            });
+          }
+
+          const boxGeomA = new THREE.BoxGeometry(3, 4, 3);
+          const boxA = new THREE.Mesh(boxGeomA);
+          boxA.position.set(1, 0, 1);
+          gripA.setFromObject(boxA);
+
+          const boxGeomB = new THREE.BoxGeometry(3, 4, 3);
+          const boxB = new THREE.Mesh(boxGeomB);
+          boxB.position.set(23, 0, 11);
+          gripB.setFromObject(boxB);
+        }
+
+        function syncColliderVisibility() {
+          const on = document.getElementById('useCollider').checked;
+          colliderMesh.visible = on;
+          if (on) {
+            const p = colliderMesh.position;
+            sim.setCollider({ type: 'sphere', center: [p.x, p.y, p.z], radius: 2.2 });
+          } else sim.setCollider(null);
+        }
+
+        function syncGrippersFromUI() {
+          sim.clearGrippers();
+          if (!document.getElementById('useGrippers').checked) return;
+          sim.addGripper({ type: 'box', min: [-0.5, -2, -0.5], max: [2.5, 2, 2.5], pinToRest: true });
+          sim.addGripper({ type: 'box', min: [21.5, -2, 9.5], max: [24.5, 2, 12.5], pinToRest: true });
+        }
+
+        setupSceneObjects();
+
+        document.getElementById('useCollider').addEventListener('change', syncColliderVisibility);
+        document.getElementById('useGrippers').addEventListener('change', function () {
+          syncGrippersFromUI();
+        });
+        document.getElementById('btnReset').addEventListener('click', function () {
+          sim.reset();
+          setupSceneObjects();
+          syncColliderVisibility();
+        });
+        document.getElementById('btnReapply').addEventListener('click', function () {
+          sim.applyGrippers();
+        });
+        document.getElementById('kStretch').addEventListener('input', function (e) {
+          sim.kStretch = +e.target.value;
+        });
+        document.getElementById('kBend').addEventListener('input', function (e) {
+          sim.kBend = +e.target.value;
+        });
+
+        let tPrev = performance.now();
+        let frame = 0;
+        function animate(now) {
+          requestAnimationFrame(animate);
+          const dt = Math.min(0.05, (now - tPrev) / 1000);
+          tPrev = now;
+          const substeps = +document.getElementById('substeps').value;
+          sim.step(dt, substeps);
+
+          const sp = sim.getPositions();
+          const attr = geometry.attributes.position.array;
+          for (let i = 0; i < nv * 3; i++) attr[i] = sp[i];
+          geometry.attributes.position.needsUpdate = true;
+          frame++;
+          if (frame % 2 === 0) geometry.computeVertexNormals();
+
+          renderer.render(scene, camera);
+        }
+        requestAnimationFrame(animate);
+
+        window.addEventListener('resize', function () {
+          camera.aspect = window.innerWidth / window.innerHeight;
+          camera.updateProjectionMatrix();
+          renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+      })();
+    </script>
+  </body>
+</html>
