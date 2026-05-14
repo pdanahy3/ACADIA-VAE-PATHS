@@ -24,11 +24,15 @@ This replaces the heavy per-frame browser physics for **data generation** with a
 
 Apache-2.0; SPDX headers are kept in `simulation/cloth_grid.py` and `simulation/warp_springs.py`.
 
-From the **repository root**:
+From the **repository root** (use the **same** Python as your conda env; install **`warp-lang`**, not `warp`):
 
 ```bash
+python -m pip install warp-lang
 python -m simulation.run_sheet_warp --device cuda:0 --steps 400 --nu 128 --disp-stride 10 --impulse --out-dir data/warp_run1
+python -m simulation.run_sheet_warp --device cuda:0 --steps 200 --nu 96 --view3d --view3d-stride 1 --disp-stride 20 --out-dir data/warp_views
 ```
+
+The PyPI package **`warp`** is unrelated and will not provide `import warp` for NVIDIA Warp. If you installed it by mistake: `python -m pip uninstall warp` then install **`warp-lang`**.
 
 - **`--nu` / `--nv`**: grid size (default 128×128). Full **512×512** is much heavier (more particles and springs); start smaller, or use `--export-size 512` to upsample PNGs for the VAE.
 - **`--disp-stride`**: how often to write `vertex-displacement-rgb-warp_*.png`.
@@ -114,7 +118,7 @@ Options:
 | `simulation/run_sheet_warp.py` | CLI: Warp CUDA mass–spring sheet, displacement PNG export |
 | `simulation/cloth_grid.py` | Rectangular grid + springs (from NVIDIA cloth benchmark) |
 | `simulation/warp_springs.py` | `eval_springs` + semi-implicit Euler on Warp |
-| `simulation/displacement_png.py` | RGB encoding aligned with `buildDisplacementMapBlob` |
+| `simulation/view_3d_mpl.py` | Optional `3dview_*.png` matplotlib renders |
 | `scripts/webgpu-cloth-sim.js` | WebGPU cloth kernels (browser-only) |
 | `requirements.txt` | `warp-lang`, PyTorch, scikit-learn, matplotlib, etc. |
 

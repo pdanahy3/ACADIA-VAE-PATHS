@@ -2,9 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Spring forces + semi-implicit Euler from NVIDIA/warp/warp/examples/benchmarks/benchmark_cloth_warp.py
-# Gravity rotated to -Y to match the ACADIA sheet convention (vertical displacement = y).
+# Gravity along -Z (Z up; sheet rests in the XY plane).
 
 from __future__ import annotations
+
+import math
 
 import numpy as np
 import warp as wp
@@ -61,7 +63,7 @@ def integrate_particles(
         v[tid] = wp.vec3()
         f[tid] = wp.vec3()
         return
-    g = wp.vec3(0.0, -9.81, 0.0)
+    g = wp.vec3(0.0, 0.0, -9.81)
     v1 = v0 + (f0 * inv_mass + g) * dt
     x1 = x0 + v1 * dt
     x[tid] = x1
@@ -130,7 +132,7 @@ class WarpSpringIntegrator:
             wp.copy(self.positions, h)
 
     def add_velocity_impulse(self, center_u: int, center_v: int, radius: float, strength: float) -> None:
-        """Kick interior vertices near (center_u, center_v) with +Y velocity impulse."""
+        """Kick interior vertices near (center_u, center_v) with +Z velocity impulse."""
         v_host = wp.zeros(self.cloth.num_particles, dtype=wp.vec3, device="cpu")
         with wp.ScopedDevice(self.device):
             wp.copy(v_host, self.velocities)
@@ -147,6 +149,54 @@ class WarpSpringIntegrator:
                 i = v * nu + u
                 if self.cloth.inv_masses[i] <= 0.0:
                     continue
-                vel[i, 1] += strength
+                vel[i, 2] += strength
+        with wp.ScopedDevice(self.device):
+            wp.copy(self.velocities, wp.from_numpy(vel.astype(np.float32), dtype=wp.vec3, device="cpu"))
+
+    def add_velocity_impulses_uv_gaussian(
+        self,
+        centers_uv: np.ndarray,
+        strength: float,
+        radius_uv: float,
+        nu: int,
+        nv: int,
+    ) -> None:
+        """
+        Add +Z velocity to vertices near each (u, v) center in grid-index space.
+        Gaussian falloff in UV distance (same units as integer grid steps).
+        """
+        centers_uv = np.asarray(centers_uv, dtype=np.float64).reshape(-1, 2)
+        if centers_uv.shape[0] == 0:
+            return
+        sigma = max(float(radius_uv) * 0.5, 1e-6)
+        sigma2 = 2.0 * sigma * sigma
+        st = float(strength)
+
+        v_host = wp.zeros(self.cloth.num_particles, dtype=wp.vec3, device="cpu")
+        with wp.ScopedDevice(self.device):
+            wp.copy(v_host, self.velocities)
+        wp.synchronize()
+        vel = v_host.numpy().reshape(-1, 3).copy()
+
+        for ci in range(centers_uv.shape[0]):
+            uc = float(centers_uv[ci, 0])
+            vc = float(centers_uv[ci, 1])
+            du0 = int(max(0, math.floor(uc - 4.0 * sigma)))
+            du1 = int(min(nu - 1, math.ceil(uc + 4.0 * sigma)))
+            dv0 = int(max(0, math.floor(vc - 4.0 * sigma)))
+            dv1 = int(min(nv - 1, math.ceil(vc + 4.0 * sigma)))
+            for vv in range(dv0, dv1 + 1):
+                for uu in range(du0, du1 + 1):
+                    i = vv * nu + uu
+                    if self.cloth.inv_masses[i] <= 0.0:
+                        continue
+                    du = float(uu) - uc
+                    dv = float(vv) - vc
+                    d2 = du * du + dv * dv
+                    w = math.exp(-d2 / sigma2)
+                    if w < 1e-8:
+                        continue
+                    vel[i, 2] += st * w
+
         with wp.ScopedDevice(self.device):
             wp.copy(self.velocities, wp.from_numpy(vel.astype(np.float32), dtype=wp.vec3, device="cpu"))

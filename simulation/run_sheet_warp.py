@@ -7,9 +7,11 @@ Upstream reference (Apache-2.0):
   https://github.com/NVIDIA/warp/blob/main/warp/examples/benchmarks/benchmark_cloth_warp.py
 
 Run (from repo root):
-  python -m simulation.run_sheet_warp --steps 300 --device cuda:0 --out-dir data/warp_run1
+  python -m simulation.run_sheet_warp --steps 300 --device cuda:0 --view3d --out-dir data/warp_run1
 
-Requires: pip install warp-lang numpy pillow
+Requires NVIDIA Warp on PyPI as the package name warp-lang (do not install the unrelated PyPI package "warp"):
+
+  python -m pip install warp-lang
 """
 
 from __future__ import annotations
@@ -24,10 +26,22 @@ _REPO = Path(__file__).resolve().parents[1]
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, str(_REPO))
 
-import warp as wp
+try:
+    import warp as wp
+except ModuleNotFoundError:
+    print(
+        "Missing NVIDIA Warp. Install the PyPI package 'warp-lang' (import name is still 'warp'):\n"
+        "  python -m pip install warp-lang\n"
+        "Do not use: pip install warp   (that is a different, unrelated project).\n"
+        "Use the same interpreter you run this script with (e.g. conda env ACADIA2026).",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from None
 
 from simulation.cloth_grid import ClothGrid
-from simulation.displacement_png import save_displacement_png
+from simulation.displacement_png import fixed_domain_half_extent_from_rest, save_displacement_png
+from simulation.mesh_flow_agents import FlowFieldParams, MeshFlowAgentSwarm, P5StyleFlowField
+from simulation.view_3d_mpl import save_cloth_3dview_png
 from simulation.warp_springs import WarpSpringIntegrator
 
 
@@ -35,7 +49,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Warp CUDA mass-spring sheet (metal / cloth).")
     ap.add_argument("--device", type=str, default="cuda:0", help="Warp device, e.g. cuda:0 or cpu")
     ap.add_argument("--nu", type=int, default=128, help="Grid resolution in u (x)")
-    ap.add_argument("--nv", type=int, default=None, help="Grid resolution in v (z); default = nu")
+    ap.add_argument("--nv", type=int, default=None, help="Grid resolution in v (y along plane depth); default = nu")
     ap.add_argument("--plane-width", type=float, default=24.0)
     ap.add_argument("--plane-depth", type=float, default=24.0)
     ap.add_argument("--steps", type=int, default=500, help="Simulation frames at 60 Hz")
@@ -48,13 +62,86 @@ def main() -> None:
     ap.add_argument("--out-dir", type=Path, default=Path("data/warp_sheet"))
     ap.add_argument("--disp-stride", type=int, default=10, help="Write displacement PNG every N frames")
     ap.add_argument("--export-size", type=int, default=512, help="PNG size (square); set 0 for native nu×nv")
-    ap.add_argument("--impulse", action="store_true", help="Apply a small +Y velocity kick at sheet center")
+    ap.add_argument("--impulse", action="store_true", help="Apply a small +Z velocity kick at sheet center (Z up)")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument(
+        "--view3d",
+        action="store_true",
+        help="Save matplotlib 3D renders as 3dview_NNNNNN.png (see --view3d-stride).",
+    )
+    ap.add_argument(
+        "--view3d-stride",
+        type=int,
+        default=1,
+        metavar="N",
+        help="When --view3d: write a PNG every N simulation frames (default 1 = every frame).",
+    )
+    ap.add_argument("--view3d-elev", type=float, default=45.0, help="Matplotlib view_init elev (deg)")
+    ap.add_argument("--view3d-azim", type=float, default=45.0, help="Matplotlib view_init azim (deg)")
+    ap.add_argument("--view3d-dpi", type=int, default=120, help="PNG resolution for 3dview captures")
+    ap.add_argument(
+        "--agents",
+        action="store_true",
+        help="Enable surface agents: p5-style flow field, UV reseed + field refresh, periodic cloth impulses.",
+    )
+    ap.add_argument("--num-agents", type=int, default=12, metavar="N", help="With --agents: number of agents")
+    ap.add_argument(
+        "--agent-reseed-interval",
+        type=int,
+        default=20,
+        metavar="N",
+        help="With --agents: regenerate flow + reseed agent UV every N simulation frames (first at frame 1).",
+    )
+    ap.add_argument(
+        "--agent-impulse-period",
+        type=int,
+        default=5,
+        metavar="N",
+        help="With --agents: apply Z velocity impulse to cloth every N frames (after agent step, before integrate).",
+    )
+    ap.add_argument(
+        "--agent-flow-damp",
+        type=float,
+        default=40.0,
+        help="With --agents: world-space damp for noise sampling (like p5 x_damp / y_damp).",
+    )
+    ap.add_argument(
+        "--agent-simplex-flow",
+        action="store_true",
+        help="With --agents: scale noise to 90° like p5 simplex2 mode (default: 180° Perlin-style).",
+    )
+    ap.add_argument(
+        "--agent-step-cells",
+        type=float,
+        default=0.08,
+        help="With --agents: agent advection step per frame in UV grid cell units.",
+    )
+    ap.add_argument(
+        "--agent-impulse-strength",
+        type=float,
+        default=0.06,
+        help="With --agents: peak +Z velocity kick scale (Gaussian-weighted over vertices).",
+    )
+    ap.add_argument(
+        "--agent-impulse-radius",
+        type=float,
+        default=2.5,
+        help="With --agents: Gaussian radius in UV grid units for each agent's cloth kick.",
+    )
     args = ap.parse_args()
 
     nv = args.nv if args.nv is not None else args.nu
     if args.nu < 3 or nv < 3:
         raise SystemExit("--nu and --nv must be >= 3")
+    if args.view3d_stride < 1:
+        raise SystemExit("--view3d-stride must be >= 1")
+    if args.agents:
+        if args.num_agents < 1:
+            raise SystemExit("--num-agents must be >= 1")
+        if args.agent_reseed_interval < 1:
+            raise SystemExit("--agent-reseed-interval must be >= 1")
+        if args.agent_impulse_period < 1:
+            raise SystemExit("--agent-impulse-period must be >= 1")
 
     wp.init()
     rng = np.random.default_rng(args.seed)
@@ -71,6 +158,8 @@ def main() -> None:
         anchor_u_edges=True,
     )
     rest = cloth.rest_positions()
+    disp_half_extent = fixed_domain_half_extent_from_rest(rest)
+    tri_flat = np.asarray(cloth.triangles, dtype=np.int32)
 
     try:
         integrator = WarpSpringIntegrator(cloth, device=args.device)
@@ -88,16 +177,66 @@ def main() -> None:
             strength=0.35 + 0.15 * rng.random(),
         )
 
+    flow_field: P5StyleFlowField | None = None
+    agent_swarm: MeshFlowAgentSwarm | None = None
+    if args.agents:
+        fp = FlowFieldParams(
+            damp_x=float(args.agent_flow_damp),
+            damp_y=float(args.agent_flow_damp),
+            simplex_style=bool(args.agent_simplex_flow),
+        )
+        flow_field = P5StyleFlowField(fp)
+        agent_swarm = MeshFlowAgentSwarm(args.num_agents, args.nu, nv)
+
     dt = 1.0 / args.fps
     args.out_dir.mkdir(parents=True, exist_ok=True)
     out_size = None if args.export_size == 0 else int(args.export_size)
 
     disp_idx = 0
+    view3d_idx = 0
+    warned_bad = False
     for frame in range(1, args.steps + 1):
+        pos_pre = integrator.numpy_positions()
+        if args.agents and flow_field is not None and agent_swarm is not None:
+            if (frame - 1) % args.agent_reseed_interval == 0:
+                flow_field.regenerate(rng)
+                agent_swarm.reseed(rng)
+            agent_swarm.step(pos_pre, flow_field, args.agent_step_cells)
+            if frame % args.agent_impulse_period == 0:
+                integrator.add_velocity_impulses_uv_gaussian(
+                    agent_swarm.uv,
+                    args.agent_impulse_strength,
+                    args.agent_impulse_radius,
+                    args.nu,
+                    nv,
+                )
         integrator.simulate(dt, args.substeps)
+        pos = integrator.numpy_positions()
+        if not warned_bad and not np.all(np.isfinite(pos)):
+            print(
+                "warning: non-finite vertex positions (NaN/Inf); integrator may be unstable. "
+                "Try smaller dt via --fps 120 (or higher), more --substeps, lower --stretch, or a weaker --impulse. "
+                "With --agents, try lower --agent-impulse-strength / larger --agent-impulse-period. "
+                "Displacement PNGs still write with neutral bytes for bad samples.",
+                file=sys.stderr,
+            )
+            warned_bad = True
+
+        if args.view3d and frame % args.view3d_stride == 0:
+            vpath = args.out_dir / f"3dview_{view3d_idx:06d}.png"
+            save_cloth_3dview_png(
+                pos,
+                tri_flat,
+                vpath,
+                elev_deg=args.view3d_elev,
+                azim_deg=args.view3d_azim,
+                dpi=int(args.view3d_dpi),
+            )
+            print(f"frame {frame}/{args.steps} wrote {vpath}")
+            view3d_idx += 1
+
         if frame % args.disp_stride != 0:
             continue
-        pos = integrator.numpy_positions()
         path = args.out_dir / f"vertex-displacement-rgb-warp_{disp_idx:06d}.png"
         save_displacement_png(
             str(path),
@@ -106,7 +245,7 @@ def main() -> None:
             args.nu,
             nv,
             out_size=out_size,
-            d=None,
+            d=disp_half_extent,
         )
         print(f"frame {frame}/{args.steps} wrote {path}")
         disp_idx += 1

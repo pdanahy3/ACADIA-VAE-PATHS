@@ -1,4 +1,5 @@
 # Core ML + GPU simulation
+# NVIDIA Warp: install as `warp-lang` on PyPI (`import warp`). Do NOT `pip install warp` (wrong package).
 warp-lang>=1.3.0
 torch>=2.1.0
 torchvision>=0.16.0

@@ -12,7 +12,7 @@ import numpy as np
 
 class ClothGrid:
     """
-    Regular grid of particles in the xz plane with y as out-of-plane displacement,
+    Regular grid in the **XY** plane at **Z = 0** (horizontal sheet), **Z up** for out-of-plane motion,
     plus stretch / bend / shear springs (NVIDIA benchmark pattern).
     """
 
@@ -34,14 +34,14 @@ class ClothGrid:
         self.plane_width = float(plane_width)
         self.plane_depth = float(plane_depth)
         dx = self.plane_width / max(1, nu - 1)
-        dz = self.plane_depth / max(1, nv - 1)
+        dy = self.plane_depth / max(1, nv - 1)
         lower = np.array(
-            (-0.5 * self.plane_width, 0.0, -0.5 * self.plane_depth),
+            (-0.5 * self.plane_width, -0.5 * self.plane_depth, 0.0),
             dtype=np.float64,
         )
         self._lower = lower.astype(np.float32)
         self._dx = float(dx)
-        self._dz = float(dz)
+        self._dy = float(dy)
 
         self.triangles: list[int] = []
         self.positions: list[np.ndarray] = []
@@ -64,7 +64,7 @@ class ClothGrid:
 
         for v in range(nv):
             for u in range(nu):
-                p = lower + np.array((u * dx, 0.0, v * dz), dtype=np.float64)
+                p = lower + np.array((u * dx, v * dy, 0.0), dtype=np.float64)
                 self.positions.append(p)
                 self.velocities.append(np.zeros(3, dtype=np.float64))
 
@@ -120,12 +120,12 @@ class ClothGrid:
         self.num_tris = len(self.triangles) // 3
 
     def rest_positions(self) -> np.ndarray:
-        """(N, 3) rest layout (xz plane, y=0)."""
+        """(N, 3) rest layout: XY plane at Z = 0 (Z up)."""
         nu, nv = self.nu, self.nv
         out = np.zeros((self.num_particles, 3), dtype=np.float32)
         i = 0
         for v in range(nv):
             for u in range(nu):
-                out[i] = self._lower + np.array((u * self._dx, 0.0, v * self._dz), dtype=np.float32)
+                out[i] = self._lower + np.array((u * self._dx, v * self._dy, 0.0), dtype=np.float32)
                 i += 1
         return out
