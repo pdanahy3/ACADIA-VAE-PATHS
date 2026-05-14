@@ -16,6 +16,8 @@ def save_cloth_3dview_png(
     azim_deg: float = 45.0,
     figsize: tuple[float, float] = (9.0, 9.0),
     dpi: int = 120,
+    camera_dist: float = 11.5,
+    save_pad_inches: float = 0.4,
 ) -> None:
     """
     Render triangle mesh with **Z up** (same world axes as the sim), centered on the deformed centroid.
@@ -48,7 +50,7 @@ def save_cloth_3dview_png(
     ax.add_collection3d(coll)
 
     span = np.ptp(pos_c, axis=0)
-    margin = float(max(span.max() * 0.26, 1.0))
+    margin = float(max(span.max() * 0.42, 1.65))
     lo = pos_c.min(axis=0) - margin
     hi = pos_c.max(axis=0) + margin
     ax.set_xlim(lo[0], hi[0])
@@ -68,7 +70,17 @@ def save_cloth_3dview_png(
         axis.pane.set_edgecolor((0.28, 0.28, 0.32))
     ax.grid(True, color="0.35", linestyle="--", linewidth=0.4, alpha=0.5)
 
-    fig.tight_layout()
+    # mplot3d + tight_layout often clips ticks/labels; pull camera back and pad the saved bbox.
+    if hasattr(ax, "dist"):
+        ax.dist = float(camera_dist)
+    fig.subplots_adjust(left=0.06, right=0.94, bottom=0.06, top=0.94)
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(path, dpi=dpi, facecolor=fig.get_facecolor())
+    fig.savefig(
+        path,
+        dpi=dpi,
+        facecolor=fig.get_facecolor(),
+        bbox_inches="tight",
+        pad_inches=float(save_pad_inches),
+    )
     plt.close(fig)

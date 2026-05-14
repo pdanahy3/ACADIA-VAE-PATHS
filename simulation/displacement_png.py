@@ -8,16 +8,17 @@ from PIL import Image
 
 def fixed_domain_half_extent_from_rest(rest: np.ndarray) -> float:
     """
-    Half-extent M used for all three displacement channels: each component Δ is mapped
-    linearly from [-M, M] to [0, 255], where M is the maximum axis span of the **rest**
-    vertex bounding box (max of per-axis peak-to-peak over x, y, z).
+    Half-extent M for each displacement channel: Δ is mapped linearly from [-M, M] to [0, 255].
+    Let S = max axis span of the **rest** vertex AABB (max of per-axis peak-to-peak). Then
+    **M = S / 2** so the encoded range is **[-S/2, S/2]** (half the symmetric width of the
+    previous mapping that used ±S).
     """
     r = np.asarray(rest, dtype=np.float64)
     span = np.ptp(r, axis=0)
     m = float(np.max(span)) if span.size else 0.0
     if not np.isfinite(m) or m < 1e-9:
-        return 1.0
-    return m
+        return 0.5
+    return 0.5 * m
 
 
 def component_to_byte(value: float, half_extent: float) -> int:
@@ -39,7 +40,8 @@ def displacement_rgb_array(
 ) -> np.ndarray:
     """
     (nv, nu, 3) uint8 — R = Δx, G = Δy, B = Δz with the same fixed half-extent M for all
-    channels (from rest AABB by default, or ``d`` if given).
+    channels. Default M comes from rest AABB (max span S → encode Δ in [-S/2, S/2]); override
+    with ``d`` (half-extent in world units) if given.
     """
     m = fixed_domain_half_extent_from_rest(rest) if d is None else float(d)
     if not np.isfinite(m) or m < 1e-12:
